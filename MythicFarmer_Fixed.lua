@@ -1,11 +1,8 @@
 --[[
-    Mythic Box Farmer
-    GUI: Rayfield Gen2 (sirius.menu/gen2)
-
+    Verity Autofarm
     loadstring(game:HttpGet("https://raw.githubusercontent.com/Moneyguy008/VeryitySearcher/main/MythicFarmer_Fixed.lua"))()
 --]]
 
--- ── Dedup guard: only one copy runs per session ─────────────────────────────
 if getgenv().MythicFarmerLoaded then return end
 getgenv().MythicFarmerLoaded = true
 
@@ -22,7 +19,7 @@ local queueteleport = queue_on_teleport
 
 local REEXEC_PAYLOAD = 'repeat task.wait() until game:IsLoaded() task.wait(1) loadstring(game:HttpGet("' .. SCRIPT_URL .. '"))()'
 
--- ── State file: persists auto-farm ON/OFF across hops ───────────────────────
+-- ── Persistent state ────────────────────────────────────────────────────────
 local STATE_FOLDER = "MythicFarmer"
 local STATE_FILE   = STATE_FOLDER .. "/state.txt"
 
@@ -35,9 +32,7 @@ end
 
 local function loadState()
     local ok, result = pcall(function()
-        if isfile and isfile(STATE_FILE) then
-            return readfile(STATE_FILE) == "ON"
-        end
+        if isfile and isfile(STATE_FILE) then return readfile(STATE_FILE) == "ON" end
         return false
     end)
     return ok and result or false
@@ -45,7 +40,7 @@ end
 
 local autoStart = loadState()
 
--- ── Load Rayfield Gen2 ──────────────────────────────────────────────────────
+-- ── Rayfield Gen2 ───────────────────────────────────────────────────────────
 local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
 
 local Players         = game:GetService("Players")
@@ -56,17 +51,15 @@ local lp   = Players.LocalPlayer
 local char = lp.Character or lp.CharacterAdded:Wait()
 local hrp  = char:WaitForChild("HumanoidRootPart")
 
-local STAGING_POS = Vector3.new(-121.91282653808594, 13.358054161071777, -144.80528259277344)
+local SAFE_ZONE = Vector3.new(-121.91282653808594, 13.358054161071777, -144.80528259277344)
 
 local running    = false
 local statusText = nil
-local farmToggle = nil  -- store toggle reference so we can update it
+local farmToggle = nil
 
+-- ── Helpers ─────────────────────────────────────────────────────────────────
 local function setStatus(msg)
-    if statusText then
-        statusText:Set({ name = "Status", description = tostring(msg) })
-    end
-    print("[MythicFarmer] " .. tostring(msg))
+    if statusText then statusText:Set(tostring(msg)) end
 end
 
 local function refreshChar()
@@ -81,9 +74,7 @@ local function tpTo(pos)
 end
 
 local function modelPosition(model)
-    if model.PrimaryPart then
-        return model.PrimaryPart.Position
-    end
+    if model.PrimaryPart then return model.PrimaryPart.Position end
     local parts, sum = {}, Vector3.new(0, 0, 0)
     for _, v in ipairs(model:GetDescendants()) do
         if v:IsA("BasePart") then
@@ -95,17 +86,13 @@ local function modelPosition(model)
     return sum / #parts
 end
 
--- Track boxes we've already collected so we never re-attempt them
 local collectedBoxes = {}
 
 local function isBoxValid(box)
-    -- Must still exist, still be parented under workspace.Boxes, and not already collected
     if not box or not box.Parent then return false end
     if collectedBoxes[box] then return false end
     local boxes = workspace:FindFirstChild("Boxes")
-    if not boxes then return false end
-    -- Must be a direct child of Boxes (not reparented to character/backpack)
-    return box.Parent == boxes
+    return boxes and box.Parent == boxes
 end
 
 local function findMythics()
@@ -126,199 +113,176 @@ local function firePrompt(model)
     if prompt and prompt:IsA("ProximityPrompt") then
         fireproximityprompt(prompt)
         task.wait(0.2)
-    else
-        warn("[MythicFarmer] PickupPrompt not found on " .. model:GetFullName())
     end
 end
 
 -- ── Server hop to a DIFFERENT server ────────────────────────────────────────
-local function serverHop()
-    setStatus("🔄 Queueing re-execute and finding a new server...")
-    if queueteleport then
-        queueteleport(REEXEC_PAYLOAD)
-        print("[MythicFarmer] ✅ Queued loadstring from URL")
-    else
-        warn("[MythicFarmer] ❌ No queueonteleport on this executor")
-    end
+local function serverHop(window)
+    setStatus("Finding a new server...")
+    if queueteleport then queueteleport(REEXEC_PAYLOAD) end
     task.wait(0.2)
 
-    -- Try to find a different server so we don't rejoin the same one
     local currentJobId = game.JobId
     local foundServer = false
 
-    local success, err = pcall(function()
+    pcall(function()
         local cursor = ""
-        for attempt = 1, 5 do
+        for _ = 1, 5 do
             local url = "https://games.roblox.com/v1/games/" .. game.PlaceId
                 .. "/servers/Public?sortOrder=Asc&limit=100"
-            if cursor ~= "" then
-                url = url .. "&cursor=" .. cursor
-            end
+            if cursor ~= "" then url = url .. "&cursor=" .. cursor end
 
-            local response = game:HttpGet(url)
-            local data = HttpService:JSONDecode(response)
-
+            local data = HttpService:JSONDecode(game:HttpGet(url))
             if data and data.data then
                 for _, server in ipairs(data.data) do
                     if server.id ~= currentJobId and server.playing and server.playing < server.maxPlayers then
-                        setStatus("🌐 Found different server — teleporting")
                         TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id, lp)
                         foundServer = true
                         return
                     end
                 end
             end
-
-            -- If there's a next page, keep looking
             if data and data.nextPageCursor and data.nextPageCursor ~= "" then
                 cursor = data.nextPageCursor
-            else
-                break
-            end
+            else break end
         end
     end)
 
-    -- Fallback: if we couldn't find a different server, just do a normal teleport
     if not foundServer then
-        setStatus("🌐 No alternate server found — normal teleport")
         pcall(TeleportService.Teleport, TeleportService, game.PlaceId, lp)
     end
 end
 
--- ── Attempt to claim a list of boxes ────────────────────────────────────────
-local function claimBoxes(boxes, window, label)
+-- ── Claim boxes ─────────────────────────────────────────────────────────────
+local function claimBoxes(boxes, label)
     for i, box in ipairs(boxes) do
         if not running then break end
-
-        -- Skip if this box is no longer valid (already picked up, reparented, etc.)
         if not isBoxValid(box) then
-            setStatus("⏭️ " .. label .. " #" .. i .. " already collected — skipping")
+            setStatus("Skipping " .. label .. " #" .. i .. " (already collected)")
             task.wait(0.1)
         else
-            local pos = modelPosition(box)
-            setStatus(label .. " #" .. i .. " — teleporting")
-            tpTo(pos)
+            setStatus("Teleporting to " .. label .. " #" .. i .. "...")
+            tpTo(modelPosition(box))
             task.wait(0.5)
-            setStatus("🖱️ Firing prompt on " .. label .. " #" .. i)
+            setStatus("Collecting " .. label .. " #" .. i .. "...")
             firePrompt(box)
-            -- Mark as collected immediately after firing prompt
             collectedBoxes[box] = true
             task.wait(0.5)
-            setStatus("🏠 Returning to staging")
-            tpTo(STAGING_POS)
-            -- 2 second cooldown after each collection to avoid ragdoll
+            setStatus("Returning to safe zone...")
+            tpTo(SAFE_ZONE)
             task.wait(2)
         end
     end
-
     if not running then return {} end
     task.wait(0.5)
     return findMythics()
 end
 
+-- ── Main loop ───────────────────────────────────────────────────────────────
 local function farmLoop(window)
     while running do
-        setStatus("🔍 Scanning for Mythic boxes...")
+        setStatus("Scanning for boxes...")
         local mythics = findMythics()
 
         if #mythics == 0 then
-            window:Notify({ title = "No Mythics Found", content = "Waiting 3s then scanning again before hopping...", duration = 4 })
-            setStatus("⏳ Waiting 3s for server to load...")
+            setStatus("No boxes found — waiting for server to load...")
             task.wait(3)
             if not running then break end
 
-            setStatus("⏳ Scanning again in 5s...")
+            setStatus("Scanning again...")
             task.wait(5)
             if not running then break end
 
             mythics = findMythics()
             if #mythics == 0 then
-                setStatus("❌ Still no Mythics — server hopping")
-                window:Notify({ title = "Still None", content = "Server hopping to find Mythics.", duration = 3 })
-                serverHop()
+                setStatus("No boxes — hopping servers...")
+                window:Toast({ title = "No boxes found, hopping" })
+                serverHop(window)
                 return
             end
         end
 
-        window:Notify({ title = "Mythics Found!", content = "Found " .. #mythics .. " Mythic box(es). Farming...", duration = 4 })
-        setStatus("✅ Found " .. #mythics .. " Mythic(s). Farming...")
+        setStatus("Found " .. #mythics .. " box(es) — farming...")
+        window:Toast({ title = "Found " .. #mythics .. " box(es)" })
 
-        -- First pass
-        local remaining = claimBoxes(mythics, window, "📦 Mythic")
+        local remaining = claimBoxes(mythics, "Box")
         if not running then break end
 
-        -- Retry pass: if any left, wait 2s and try once more
         if #remaining > 0 then
-            window:Notify({ title = "Retrying", content = #remaining .. " box(es) left. Retrying in 2s...", duration = 3 })
-            setStatus("⏳ " .. #remaining .. " uncollectable — retrying in 2s")
+            setStatus("Retrying " .. #remaining .. " box(es) in 2s...")
             task.wait(2)
             if not running then break end
-
-            remaining = claimBoxes(remaining, window, "🔁 Retry")
+            remaining = claimBoxes(remaining, "Retry")
             if not running then break end
         end
 
         if #remaining == 0 then
-            window:Notify({ title = "All Mythics Claimed!", content = "Hopping to a new server.", duration = 4 })
-            setStatus("🎉 All claimed — server hopping")
+            setStatus("All collected — hopping servers...")
         else
-            window:Notify({ title = "Some Still Stuck", content = #remaining .. " box(es) couldn't be claimed after retry. Hopping.", duration = 4 })
-            setStatus("⚠️ " .. #remaining .. " stuck after retry — hopping")
+            setStatus(#remaining .. " stuck — hopping servers...")
         end
-        serverHop()
+
+        window:Toast({ title = "Done — hopping to next server" })
+        serverHop(window)
         return
     end
-    setStatus("⏸️ Stopped")
+    setStatus("Idle")
 end
 
--- ── GUI ─────────────────────────────────────────────────────────────────────
-local window = Rayfield:CreateWindow({ name = "Mythic Farmer", subtitle = "Auto Box Hunter", sidebarLayout = true })
-local tab = window:CreateTab({ name = "Farmer", icon = 93364949241311 })
+-- ── Window ──────────────────────────────────────────────────────────────────
+local window = Rayfield:CreateWindow({
+    name = "Verity Autofarm",
+    subtitle = "Verity's Game",
+    sidebarLayout = true,
+})
 
-statusText = tab:CreateText({ name = "Status", description = autoStart and "🚀 Auto-starting from last session..." or "Idle — toggle Auto Farm to start" })
+-- ── Farm tab ────────────────────────────────────────────────────────────────
+local farmTab = window:CreateTab({ name = "Farm", icon = 93364949241311 })
 
-farmToggle = tab:CreateToggle({
+statusText = farmTab:CreateText({
+    name = "Status",
+    text = autoStart and "Resuming from last session..." or "Idle",
+})
+
+farmToggle = farmTab:CreateToggle({
     name = "Auto Farm",
-    description = "Scans for Mythic boxes, claims them, and server hops automatically. State persists across hops.",
-    CurrentValue = autoStart,
+    value = autoStart,
     callback = function(value)
         running = value
         saveState(value)
         if running then
-            setStatus("🚀 Starting...")
-            window:Notify({ title = "Mythic Farmer", content = "Auto-farm started.", duration = 3 })
+            setStatus("Starting...")
             task.spawn(farmLoop, window)
         else
-            setStatus("⏸️ Stopped")
-            window:Notify({ title = "Mythic Farmer", content = "Auto-farm stopped.", duration = 3 })
+            setStatus("Idle")
         end
     end,
 })
 
-tab:CreateButton({ name = "Scan Now", description = "Run one scan pass (no server hop).", callback = function()
-    local m = findMythics()
-    window:Notify({ title = "Scan Result", content = "Found " .. #m .. " Mythic box(es).", duration = 5 })
-    setStatus("🔍 Manual scan: " .. #m .. " Mythic(s) found")
-end })
+-- ── Misc tab ────────────────────────────────────────────────────────────────
+local miscTab = window:CreateTab({ name = "Misc", icon = 80827985498498 })
 
-tab:CreateButton({ name = "Go to Staging", description = "Teleport to the staging position.", callback = function()
-    tpTo(STAGING_POS)
-    setStatus("📍 Teleported to staging position")
-end })
+miscTab:CreateButton({
+    name = "Server Hop",
+    callback = function()
+        window:Toast({ title = "Hopping to a new server..." })
+        serverHop(window)
+    end,
+})
 
-tab:CreateButton({ name = "Server Hop", description = "Queue re-execute then hop to a different server.", callback = function()
-    serverHop()
-end })
+miscTab:CreateButton({
+    name = "Teleport To Safe Zone",
+    callback = function()
+        tpTo(SAFE_ZONE)
+        window:Toast({ title = "Teleported to safe zone" })
+    end,
+})
 
-tab:CreateDivider()
-tab:CreateText({ name = "How it works", description = "Scans workspace.Boxes for Mythics, teleports to each, fires the PickupPrompt, returns to staging with 2s cooldown. Uncollectable boxes get one retry after 2s. Hops to a different server (skips current). Toggle state persists across hops." })
+-- ── Startup ─────────────────────────────────────────────────────────────────
+window:Toast({ title = "Verity Autofarm loaded" })
 
-window:Notify({ title = "Mythic Farmer Loaded", content = autoStart and "✅ Auto-farm was ON — resuming!" or "Toggle Auto Farm to begin.", duration = 5 })
-
--- ── Auto-start if state was ON from last hop ────────────────────────────────
 if autoStart then
     running = true
-    -- Set the toggle visually to ON so the user can turn it off
-    pcall(function() farmToggle:Set(true) end)
+    farmToggle:Set(true, true)
     task.spawn(farmLoop, window)
 end
