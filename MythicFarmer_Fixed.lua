@@ -91,12 +91,25 @@ local function modelPosition(model)
     return sum / #parts
 end
 
+-- Track boxes we've already collected so we never re-attempt them
+local collectedBoxes = {}
+
+local function isBoxValid(box)
+    -- Must still exist, still be parented under workspace.Boxes, and not already collected
+    if not box or not box.Parent then return false end
+    if collectedBoxes[box] then return false end
+    local boxes = workspace:FindFirstChild("Boxes")
+    if not boxes then return false end
+    -- Must be a direct child of Boxes (not reparented to character/backpack)
+    return box.Parent == boxes
+end
+
 local function findMythics()
     local boxes   = workspace:FindFirstChild("Boxes")
     local mythics = {}
     if not boxes then return mythics end
     for _, child in ipairs(boxes:GetChildren()) do
-        if child.Name == "Secret" or child.Name == "Mythic" then
+        if (child.Name == "Secret" or child.Name == "Mythic") and not collectedBoxes[child] then
             table.insert(mythics, child)
         end
     end
@@ -172,17 +185,26 @@ end
 local function claimBoxes(boxes, window, label)
     for i, box in ipairs(boxes) do
         if not running then break end
-        local pos = modelPosition(box)
-        setStatus(label .. " #" .. i .. " — teleporting")
-        tpTo(pos)
-        task.wait(0.5)
-        setStatus("🖱️ Firing prompt on " .. label .. " #" .. i)
-        firePrompt(box)
-        task.wait(0.5)
-        setStatus("🏠 Returning to staging")
-        tpTo(STAGING_POS)
-        -- 2 second cooldown after each collection to avoid ragdoll
-        task.wait(2)
+
+        -- Skip if this box is no longer valid (already picked up, reparented, etc.)
+        if not isBoxValid(box) then
+            setStatus("⏭️ " .. label .. " #" .. i .. " already collected — skipping")
+            task.wait(0.1)
+        else
+            local pos = modelPosition(box)
+            setStatus(label .. " #" .. i .. " — teleporting")
+            tpTo(pos)
+            task.wait(0.5)
+            setStatus("🖱️ Firing prompt on " .. label .. " #" .. i)
+            firePrompt(box)
+            -- Mark as collected immediately after firing prompt
+            collectedBoxes[box] = true
+            task.wait(0.5)
+            setStatus("🏠 Returning to staging")
+            tpTo(STAGING_POS)
+            -- 2 second cooldown after each collection to avoid ragdoll
+            task.wait(2)
+        end
     end
 
     if not running then return {} end
