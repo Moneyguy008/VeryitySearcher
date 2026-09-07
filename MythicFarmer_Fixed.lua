@@ -5,6 +5,10 @@
     loadstring(game:HttpGet("https://raw.githubusercontent.com/Moneyguy008/VeryitySearcher/main/MythicFarmer_Fixed.lua"))()
 --]]
 
+-- ── Dedup guard: only one copy runs per session ─────────────────────────────
+if getgenv().MythicFarmerLoaded then return end
+getgenv().MythicFarmerLoaded = true
+
 if not game:IsLoaded() then game.Loaded:Wait() end
 task.wait(1)
 
