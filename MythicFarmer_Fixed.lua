@@ -46,6 +46,7 @@ local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
 
 local Players         = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
+local HttpService     = game:GetService("HttpService")
 
 local lp   = Players.LocalPlayer
 local char = lp.Character or lp.CharacterAdded:Wait()
@@ -55,6 +56,7 @@ local STAGING_POS = Vector3.new(-121.91282653808594, 13.358054161071777, -144.80
 
 local running    = false
 local statusText = nil
+local farmToggle = nil  -- store toggle reference so we can update it
 
 local function setStatus(msg)
     if statusText then
@@ -112,8 +114,9 @@ local function firePrompt(model)
     end
 end
 
+-- ── Server hop to a DIFFERENT server ────────────────────────────────────────
 local function serverHop()
-    setStatus("🔄 Queueing re-execute and server hopping...")
+    setStatus("🔄 Queueing re-execute and finding a new server...")
     if queueteleport then
         queueteleport(REEXEC_PAYLOAD)
         print("[MythicFarmer] ✅ Queued loadstring from URL")
@@ -121,13 +124,51 @@ local function serverHop()
         warn("[MythicFarmer] ❌ No queueonteleport on this executor")
     end
     task.wait(0.2)
-    local ok, err = pcall(TeleportService.Teleport, TeleportService, game.PlaceId, lp)
-    if not ok then
-        warn("[MythicFarmer] Teleport failed: " .. tostring(err))
+
+    -- Try to find a different server so we don't rejoin the same one
+    local currentJobId = game.JobId
+    local foundServer = false
+
+    local success, err = pcall(function()
+        local cursor = ""
+        for attempt = 1, 5 do
+            local url = "https://games.roblox.com/v1/games/" .. game.PlaceId
+                .. "/servers/Public?sortOrder=Asc&limit=100"
+            if cursor ~= "" then
+                url = url .. "&cursor=" .. cursor
+            end
+
+            local response = game:HttpGet(url)
+            local data = HttpService:JSONDecode(response)
+
+            if data and data.data then
+                for _, server in ipairs(data.data) do
+                    if server.id ~= currentJobId and server.playing and server.playing < server.maxPlayers then
+                        setStatus("🌐 Found different server — teleporting")
+                        TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id, lp)
+                        foundServer = true
+                        return
+                    end
+                end
+            end
+
+            -- If there's a next page, keep looking
+            if data and data.nextPageCursor and data.nextPageCursor ~= "" then
+                cursor = data.nextPageCursor
+            else
+                break
+            end
+        end
+    end)
+
+    -- Fallback: if we couldn't find a different server, just do a normal teleport
+    if not foundServer then
+        setStatus("🌐 No alternate server found — normal teleport")
+        pcall(TeleportService.Teleport, TeleportService, game.PlaceId, lp)
     end
 end
 
--- ── Attempt to claim a list of boxes, returns any that are still there ──────
+-- ── Attempt to claim a list of boxes ────────────────────────────────────────
 local function claimBoxes(boxes, window, label)
     for i, box in ipairs(boxes) do
         if not running then break end
@@ -140,7 +181,8 @@ local function claimBoxes(boxes, window, label)
         task.wait(0.5)
         setStatus("🏠 Returning to staging")
         tpTo(STAGING_POS)
-        task.wait(0.5)
+        -- 2 second cooldown after each collection to avoid ragdoll
+        task.wait(2)
     end
 
     if not running then return {} end
@@ -190,7 +232,6 @@ local function farmLoop(window)
             if not running then break end
         end
 
-        -- Done — report and hop
         if #remaining == 0 then
             window:Notify({ title = "All Mythics Claimed!", content = "Hopping to a new server.", duration = 4 })
             setStatus("🎉 All claimed — server hopping")
@@ -210,20 +251,20 @@ local tab = window:CreateTab({ name = "Farmer", icon = 93364949241311 })
 
 statusText = tab:CreateText({ name = "Status", description = autoStart and "🚀 Auto-starting from last session..." or "Idle — toggle Auto Farm to start" })
 
-tab:CreateToggle({
+farmToggle = tab:CreateToggle({
     name = "Auto Farm",
     description = "Scans for Mythic boxes, claims them, and server hops automatically. State persists across hops.",
-    currentValue = autoStart,
+    CurrentValue = autoStart,
     callback = function(value)
         running = value
         saveState(value)
         if running then
             setStatus("🚀 Starting...")
-            window:Notify({ title = "Mythic Farmer", content = "Auto-farm started. State saved — will persist across hops.", duration = 3 })
+            window:Notify({ title = "Mythic Farmer", content = "Auto-farm started.", duration = 3 })
             task.spawn(farmLoop, window)
         else
             setStatus("⏸️ Stopped")
-            window:Notify({ title = "Mythic Farmer", content = "Auto-farm stopped. State saved — won't auto-start next hop.", duration = 3 })
+            window:Notify({ title = "Mythic Farmer", content = "Auto-farm stopped.", duration = 3 })
         end
     end,
 })
@@ -239,17 +280,19 @@ tab:CreateButton({ name = "Go to Staging", description = "Teleport to the stagin
     setStatus("📍 Teleported to staging position")
 end })
 
-tab:CreateButton({ name = "Server Hop", description = "Queue re-execute then hop to a new server.", callback = function()
+tab:CreateButton({ name = "Server Hop", description = "Queue re-execute then hop to a different server.", callback = function()
     serverHop()
 end })
 
 tab:CreateDivider()
-tab:CreateText({ name = "How it works", description = "Scans workspace.Boxes for Mythics, teleports to each, fires the PickupPrompt, returns to staging. Uncollectable boxes get one retry after 2s. State persists via workspace/MythicFarmer/state.txt." })
+tab:CreateText({ name = "How it works", description = "Scans workspace.Boxes for Mythics, teleports to each, fires the PickupPrompt, returns to staging with 2s cooldown. Uncollectable boxes get one retry after 2s. Hops to a different server (skips current). Toggle state persists across hops." })
 
-window:Notify({ title = "Mythic Farmer Loaded", content = autoStart and "✅ Auto-farm was ON — resuming automatically!" or "Toggle Auto Farm to begin.", duration = 5 })
+window:Notify({ title = "Mythic Farmer Loaded", content = autoStart and "✅ Auto-farm was ON — resuming!" or "Toggle Auto Farm to begin.", duration = 5 })
 
 -- ── Auto-start if state was ON from last hop ────────────────────────────────
 if autoStart then
     running = true
+    -- Set the toggle visually to ON so the user can turn it off
+    pcall(function() farmToggle:Set(true) end)
     task.spawn(farmLoop, window)
 end
