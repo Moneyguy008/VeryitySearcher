@@ -2,10 +2,14 @@
     Mythic Box Farmer
     GUI: Rayfield Gen2 (sirius.menu/gen2)
 
-    SETUP: Save this file as MythicFarmer/MythicFarmer.lua in your
-           executor's workspace folder. Run it once — after that it
-           auto-runs on every server hop.
+    SETUP: Upload this script to a GitHub Gist or Pastebin.
+           Paste the RAW url below. That's it — no manual file saving needed.
 --]]
+
+-- ⬇️⬇️ PASTE YOUR RAW URL HERE ⬇️⬇️
+local SCRIPT_URL = "RAW_URL_HERE"
+-- Example: "https://gist.githubusercontent.com/yourname/.../raw/MythicFarmer.lua"
+-- Example: "https://pastebin.com/raw/XXXXXXXX"
 
 -- ── Wait for game to load (critical after teleport) ─────────────────────────
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -18,40 +22,8 @@ local queueteleport = queue_on_teleport
     or (fluxus and fluxus.queue_on_teleport)
     or (Wave and Wave.queue_on_teleport)
 
--- ── File paths ──────────────────────────────────────────────────────────────
-local FOLDER        = "MythicFarmer"
-local FILE          = FOLDER .. "/MythicFarmer.lua"
-local AUTOEXEC      = "autoexec"
-local AUTOEXEC_FILE = AUTOEXEC .. "/MythicFarmer.lua"
-
--- ── Check that the saved file exists (required for re-execute) ──────────────
-local hasSavedFile = isfile and isfile(FILE)
-
--- If the file doesn't exist yet, try to create it from autoexec or warn the user
-if not hasSavedFile then
-    -- Maybe it's in autoexec but not in MythicFarmer/
-    if isfile and isfile(AUTOEXEC_FILE) then
-        pcall(function()
-            if not isfolder(FOLDER) then makefolder(FOLDER) end
-            writefile(FILE, readfile(AUTOEXEC_FILE))
-        end)
-        hasSavedFile = isfile(FILE)
-    end
-end
-
--- ── The tiny payload we queue before every hop ──────────────────────────────
--- This is the key fix: we queue a small loader, not the whole script.
-local REEXEC_PAYLOAD = [[
-repeat task.wait() until game:IsLoaded()
-task.wait(1)
-if readfile and isfile then
-    if isfile("MythicFarmer/MythicFarmer.lua") then
-        loadstring(readfile("MythicFarmer/MythicFarmer.lua"))()
-    elseif isfile("autoexec/MythicFarmer.lua") then
-        loadstring(readfile("autoexec/MythicFarmer.lua"))()
-    end
-end
-]]
+-- ── The re-execute payload: just re-fetch from URL ──────────────────────────
+local REEXEC_PAYLOAD = 'repeat task.wait() until game:IsLoaded() task.wait(1) loadstring(game:HttpGet("' .. SCRIPT_URL .. '"))()'
 
 -- ── Load Rayfield Gen2 ──────────────────────────────────────────────────────
 local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
@@ -132,10 +104,14 @@ local function serverHop()
     setStatus("🔄 Queueing re-execute and server hopping...")
 
     if queueteleport then
-        queueteleport(REEXEC_PAYLOAD)
-        print("[MythicFarmer] ✅ Queued re-execute payload")
+        if SCRIPT_URL == "RAW_URL_HERE" then
+            warn("[MythicFarmer] ❌ You forgot to set SCRIPT_URL! Won't auto-run after hop.")
+        else
+            queueteleport(REEXEC_PAYLOAD)
+            print("[MythicFarmer] ✅ Queued loadstring from URL")
+        end
     else
-        warn("[MythicFarmer] ❌ No queueonteleport — won't auto-run after hop")
+        warn("[MythicFarmer] ❌ No queueonteleport found on this executor")
     end
 
     task.wait(0.2)
@@ -238,11 +214,13 @@ local window = Rayfield:CreateWindow({
 
 local tab = window:CreateTab({ name = "Farmer", icon = 93364949241311 })
 
+local urlReady = SCRIPT_URL ~= "RAW_URL_HERE"
+
 statusText = tab:CreateText({
     name        = "Status",
-    description = hasSavedFile
-        and "✅ File found — ready to auto-farm"
-        or "⚠️ Save this script to workspace/MythicFarmer/MythicFarmer.lua first!",
+    description = urlReady
+        and "✅ URL set — ready to auto-farm"
+        or "⚠️ Set SCRIPT_URL at the top of the script!",
 })
 
 tab:CreateToggle({
@@ -299,17 +277,10 @@ tab:CreateText({
     description = "Scans workspace.Boxes for Mythics, teleports to each, fires the PickupPrompt, returns to staging, then server hops when done.",
 })
 
--- ── Startup notification ────────────────────────────────────────────────────
-if hasSavedFile then
-    window:Notify({
-        title    = "Mythic Farmer Loaded",
-        content  = "✅ Script file found. Auto-run after hop is ready!",
-        duration = 5,
-    })
-else
-    window:Notify({
-        title    = "⚠️ One-Time Setup Needed",
-        content  = "Save this script as MythicFarmer.lua inside workspace/MythicFarmer/ folder. Server hop won't auto-run until you do!",
-        duration = 12,
-    })
-end
+window:Notify({
+    title    = urlReady and "Mythic Farmer Loaded" or "⚠️ Setup Needed",
+    content  = urlReady
+        and "URL set — auto-hop is fully working!"
+        or "Set SCRIPT_URL at the top to a raw Gist/Pastebin link. Without it server hops won't re-run the script.",
+    duration = 7,
+})
