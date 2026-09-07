@@ -22,6 +22,8 @@ local REEXEC_PAYLOAD = 'repeat task.wait() until game:IsLoaded() task.wait(1) lo
 -- ── Persistent state ────────────────────────────────────────────────────────
 local STATE_FOLDER = "MythicFarmer"
 local STATE_FILE   = STATE_FOLDER .. "/state.txt"
+local VISITED_FILE = STATE_FOLDER .. "/visited.txt"
+local MAX_VISITED  = 20
 
 local function saveState(on)
     pcall(function()
@@ -37,6 +39,36 @@ local function loadState()
     end)
     return ok and result or false
 end
+
+-- Track recently visited servers so we never rejoin them
+local visitedServers = {}
+
+local function loadVisited()
+    pcall(function()
+        if isfile and isfile(VISITED_FILE) then
+            local raw = readfile(VISITED_FILE)
+            for id in raw:gmatch("[^\n]+") do
+                visitedServers[id] = true
+            end
+        end
+    end)
+end
+
+local function saveVisited()
+    pcall(function()
+        if not isfolder(STATE_FOLDER) then makefolder(STATE_FOLDER) end
+        -- Collect keys, keep only the most recent MAX_VISITED
+        local ids = {}
+        for id in pairs(visitedServers) do table.insert(ids, id) end
+        while #ids > MAX_VISITED do table.remove(ids, 1) end
+        writefile(VISITED_FILE, table.concat(ids, "\n"))
+    end)
+end
+
+-- Mark the current server as visited on load
+loadVisited()
+visitedServers[game.JobId] = true
+saveVisited()
 
 local autoStart = loadState()
 
@@ -122,8 +154,7 @@ local function serverHop(window)
     if queueteleport then queueteleport(REEXEC_PAYLOAD) end
     task.wait(0.2)
 
-    local currentJobId = game.JobId
-    local foundServer = false
+    local candidates = {}
 
     pcall(function()
         local cursor = ""
@@ -135,10 +166,9 @@ local function serverHop(window)
             local data = HttpService:JSONDecode(game:HttpGet(url))
             if data and data.data then
                 for _, server in ipairs(data.data) do
-                    if server.id ~= currentJobId and server.playing and server.playing < server.maxPlayers then
-                        TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id, lp)
-                        foundServer = true
-                        return
+                    if server.playing and server.playing < server.maxPlayers
+                       and not visitedServers[server.id] then
+                        table.insert(candidates, server.id)
                     end
                 end
             end
@@ -148,7 +178,21 @@ local function serverHop(window)
         end
     end)
 
-    if not foundServer then
+    if #candidates > 0 then
+        -- Pick a random server from the valid ones
+        local pick = candidates[math.random(1, #candidates)]
+        setStatus("Joining server...")
+        pcall(TeleportService.TeleportToPlaceInstance, TeleportService, game.PlaceId, pick, lp)
+    else
+        -- No unvisited servers found — clear visited list and do a normal teleport
+        -- so we don't get permanently stuck
+        setStatus("No new servers — resetting and hopping...")
+        visitedServers = {}
+        pcall(function()
+            if isfile and isfile(VISITED_FILE) then
+                writefile(VISITED_FILE, "")
+            end
+        end)
         pcall(TeleportService.Teleport, TeleportService, game.PlaceId, lp)
     end
 end
